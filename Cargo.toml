@@ -9,5 +9,5 @@ edition = "2021"
 float-ord = "0.3.2"
 rand = "0.8.5"
 rand_xorshift = "0.3.0"
-dashmap = "5.4.0"
+dashmap = { version = "5.4.0", features = ["serde"] }
 serde = { version = "1.0.144", features = ["derive"] }

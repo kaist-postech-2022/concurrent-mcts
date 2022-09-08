@@ -68,10 +68,6 @@ impl fmt::Display for MCTSInfo {
 
 #[derive(Serialize, Deserialize)]
 pub struct MCTS<P: Player, A: Action, S: State<P, A>> {
-    #[serde(bound(
-        serialize = "DashMap<S, StateNode<A>>: Serialize",
-        deserialize = "DashMap<S, StateNode<A>>: Deserialize<'de>"
-    ))]
     state_map: DashMap<S, StateNode<A>>,
     info: MCTSInfo,
     _marker: PhantomData<(P, A)>,
