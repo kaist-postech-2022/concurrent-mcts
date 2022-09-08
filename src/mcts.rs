@@ -9,7 +9,7 @@ use float_ord::FloatOrd;
 use rand::{Rng, SeedableRng};
 use rand_xorshift::XorShiftRng;
 
-use crate::{Action, Player, State, StateNode, MCTS};
+use crate::{Action, MCTSInfo, Player, State, StateNode, StateNodeInfo, MCTS};
 
 const MAX_ROLLOUT_DEPTH: usize = 1_000_000;
 
@@ -29,10 +29,19 @@ impl<A: Action> StateNode<A> {
     }
 }
 
+impl MCTSInfo {
+    fn new() -> Self {
+        Self {
+            total_node: AtomicU64::new(0),
+        }
+    }
+}
+
 impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
     pub fn new() -> Self {
         Self {
             state_map: DashMap::new(),
+            info: MCTSInfo::new(),
             _marker: PhantomData,
         }
     }
@@ -40,6 +49,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             state_map: DashMap::with_capacity(capacity),
+            info: MCTSInfo::new(),
             _marker: PhantomData,
         }
     }
@@ -101,6 +111,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         for state in path.iter().rev() {
             let node = self.state_map.get(state).unwrap();
 
+            node.total_visit.fetch_add(1, Ordering::Relaxed);
             for (i, reward) in rewards.iter().enumerate() {
                 node.total_reward[i].fetch_add(*reward, Ordering::Relaxed);
             }
@@ -121,10 +132,10 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                 let result = self
                     .state_map
                     .entry(state.clone())
-                    .or_insert(StateNode::new(
-                        state.available_actions(),
-                        state.player_len(),
-                    ))
+                    .or_insert_with(|| {
+                        self.info.total_node.fetch_add(1, Ordering::Relaxed);
+                        StateNode::new(state.available_actions(), state.player_len())
+                    })
                     .downgrade();
                 result
             });
@@ -167,6 +178,17 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         });
     }
 
+    pub fn node_info_from(&self, state: &S) -> Option<StateNodeInfo> {
+        self.state_map.get(state).map(|node| StateNodeInfo {
+            total_reward: node
+                .total_reward
+                .iter()
+                .map(|reward| reward.load(Ordering::Relaxed))
+                .collect(),
+            total_visit: node.total_visit.load(Ordering::Relaxed),
+        })
+    }
+
     pub fn best_actions_from(&self, state: &S, max_num: usize) -> Vec<A> {
         let now_pid = state.current_player().id();
 
@@ -199,5 +221,9 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         } else {
             (&actions[0..max_num]).to_vec()
         }
+    }
+
+    pub fn diagnose(&self) -> String {
+        self.info.to_string()
     }
 }
