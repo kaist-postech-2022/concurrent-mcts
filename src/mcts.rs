@@ -130,6 +130,12 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         }
     }
 
+    pub fn rollout_iter_from(&self, state: S, iter: usize) {
+        for _ in 0..iter {
+            self.rollout_from(state.clone());
+        }
+    }
+
     pub fn rollout_parallel_from(&self, state: S, thread_num: usize, total_iter: usize) {
         let counter = AtomicUsize::new(total_iter);
 
@@ -146,5 +152,35 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                 });
             }
         });
+    }
+
+    pub fn best_actions_from(&self, state: &S, max_num: usize) -> Vec<A> {
+        let now_pid = state.current_player().id();
+
+        let node = self.state_map.get(state);
+
+        if node.is_none() {
+            return Vec::new();
+        }
+
+        let mut actions = node.unwrap().available_actions.clone();
+        actions.sort_by_cached_key(|action| {
+            let child_node = self
+                .state_map
+                .get(&state.clone().apply_action((*action).clone()));
+
+            if let Some(node) = child_node {
+                let reward = node.total_reward[now_pid].load(Ordering::Relaxed) as f64;
+                let visit = node.total_visit.load(Ordering::Relaxed) as f64;
+
+                if visit > 0. {
+                    return FloatOrd(-1. * reward / visit);
+                }
+            }
+
+            FloatOrd(-1. * f64::NEG_INFINITY)
+        });
+
+        (&actions[0..max_num]).to_vec()
     }
 }
