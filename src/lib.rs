@@ -53,6 +53,7 @@ pub struct StateNodeInfo {
 #[derive(Serialize, Deserialize)]
 struct MCTSInfo {
     total_node: AtomicU64,
+    ignored_rollout: AtomicU64,
 }
 
 impl fmt::Display for MCTSInfo {
@@ -61,6 +62,10 @@ impl fmt::Display for MCTSInfo {
             .field(
                 "total_node",
                 &thousands_separate(self.total_node.load(Ordering::Relaxed)),
+            )
+            .field(
+                "ignored_rollout",
+                &thousands_separate(self.ignored_rollout.load(Ordering::Relaxed)),
             )
             .finish()
     }

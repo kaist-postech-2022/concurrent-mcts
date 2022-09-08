@@ -11,7 +11,7 @@ use rand_xorshift::XorShiftRng;
 
 use crate::{Action, MCTSInfo, Player, State, StateNode, StateNodeInfo, MCTS};
 
-const MAX_ROLLOUT_DEPTH: usize = 1_000_000;
+const MAX_ROLLOUT_DEPTH: usize = 200;
 
 impl<A: Action> StateNode<A> {
     fn new(available_actions: Vec<A>, player_len: usize) -> Self {
@@ -33,6 +33,7 @@ impl MCTSInfo {
     fn new() -> Self {
         Self {
             total_node: AtomicU64::new(0),
+            ignored_rollout: AtomicU64::new(0),
         }
     }
 }
@@ -124,7 +125,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         loop {
             path.push(state.clone());
             if path.len() > MAX_ROLLOUT_DEPTH {
-                eprintln!("The rollout depth is over. Please check the fitted cycle existence.");
+                self.info.ignored_rollout.fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
