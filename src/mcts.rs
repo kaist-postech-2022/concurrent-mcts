@@ -1,10 +1,10 @@
 use std::{
     marker::PhantomData,
-    sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicI64, AtomicU64, Ordering},
     thread,
 };
 
-use dashmap::{mapref::one::Ref, DashMap};
+use dashmap::DashMap;
 use float_ord::FloatOrd;
 use rand::{Rng, SeedableRng};
 use rand_xorshift::XorShiftRng;
@@ -33,6 +33,13 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
     pub fn new() -> Self {
         Self {
             state_map: DashMap::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            state_map: DashMap::with_capacity(capacity),
             _marker: PhantomData,
         }
     }
@@ -90,8 +97,10 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         choice
     }
 
-    fn backpropagate(&self, path: Vec<Ref<S, StateNode<A>>>, rewards: Vec<i64>) {
-        for node in path.iter().rev() {
+    fn backpropagate(&self, path: Vec<S>, rewards: Vec<i64>) {
+        for state in path.iter().rev() {
+            let node = self.state_map.get(state).unwrap();
+
             for (i, reward) in rewards.iter().enumerate() {
                 node.total_reward[i].fetch_add(*reward, Ordering::Relaxed);
             }
@@ -101,22 +110,24 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
     pub fn rollout_from(&self, mut state: S) {
         let mut path = Vec::new();
 
-        let mut node: Ref<S, StateNode<A>>;
-
         loop {
+            path.push(state.clone());
             if path.len() > MAX_ROLLOUT_DEPTH {
                 eprintln!("The rollout depth is over. Please check the fitted cycle existence.");
                 return;
             }
 
-            node = self
-                .state_map
-                .entry(state.clone())
-                .or_insert(StateNode::new(
-                    state.available_actions(),
-                    state.player_len(),
-                ))
-                .downgrade();
+            let node = self.state_map.get(&state).unwrap_or_else(|| {
+                let result = self
+                    .state_map
+                    .entry(state.clone())
+                    .or_insert(StateNode::new(
+                        state.available_actions(),
+                        state.player_len(),
+                    ))
+                    .downgrade();
+                result
+            });
 
             let next_action = self.select_by_uct(state.clone(), &node).unwrap();
             state.do_action(next_action);
@@ -125,26 +136,28 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                 self.backpropagate(path, rewards);
                 return;
             }
-
-            path.push(node);
         }
     }
 
-    pub fn rollout_iter_from(&self, state: S, iter: usize) {
+    pub fn rollout_iter_from(&self, state: S, iter: u64) {
         for _ in 0..iter {
             self.rollout_from(state.clone());
         }
     }
 
-    pub fn rollout_parallel_from(&self, state: S, thread_num: usize, total_iter: usize) {
-        let counter = AtomicUsize::new(total_iter);
+    pub fn rollout_parallel_from(&self, state: S, thread_num: usize, total_iter: u64) {
+        assert!(
+            total_iter < (1 << 60),
+            "There should be margin of iter num."
+        );
+        let counter = AtomicU64::new(0);
 
         thread::scope(|scope| {
             for _ in 0..thread_num {
                 scope.spawn(|| loop {
-                    let count = counter.fetch_sub(1, Ordering::Relaxed);
+                    let count = counter.fetch_add(1, Ordering::Relaxed);
 
-                    if count == 0 {
+                    if count >= total_iter {
                         break;
                     }
 
@@ -181,6 +194,10 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
             FloatOrd(-1. * f64::NEG_INFINITY)
         });
 
-        (&actions[0..max_num]).to_vec()
+        if actions.len() <= max_num {
+            actions
+        } else {
+            (&actions[0..max_num]).to_vec()
+        }
     }
 }
