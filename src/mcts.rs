@@ -1,7 +1,8 @@
 use std::{
     marker::PhantomData,
-    sync::atomic::{AtomicI64, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     thread,
+    time::{self, Duration, SystemTime},
 };
 
 use dashmap::DashMap;
@@ -33,6 +34,7 @@ impl MCTSInfo {
     fn new() -> Self {
         Self {
             total_node: AtomicU64::new(0),
+            total_rollout: AtomicU64::new(0),
             ignored_rollout: AtomicU64::new(0),
         }
     }
@@ -55,6 +57,9 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         }
     }
 
+    /// Select next action with UCT policy
+    ///
+    /// The exploration constant is sqrt(2) according to AlphaGo.
     fn select_by_uct(&self, state: S, node: &StateNode<A>) -> Option<A> {
         let now_pid = state.current_player().id();
 
@@ -117,8 +122,13 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                 node.total_reward[i].fetch_add(*reward, Ordering::Relaxed);
             }
         }
+
+        self.info.total_rollout.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Rollout one time and backpropagate the win result except over-depth
+    ///
+    /// The default policy of cycle on tree is ignore. If you want to do other policy, please re-implement.
     pub fn rollout_from(&self, mut state: S) {
         let mut path = Vec::new();
 
@@ -157,7 +167,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         }
     }
 
-    pub fn rollout_parallel_from(&self, state: S, thread_num: usize, total_iter: u64) {
+    pub fn rollout_parallel_iter_from(&self, state: S, thread_num: usize, total_iter: u64) {
         assert!(
             total_iter < (1 << 60),
             "There should be margin of iter num."
@@ -175,6 +185,57 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
 
                     self.rollout_from(state.clone());
                 });
+            }
+        });
+    }
+
+    /// Run rollout with parallel during almost given duration
+    ///
+    /// Pay attention to that it does not obey strictly the given duration. If you really want to obey strictly it, implement unsafe version that kills threads after the given duration
+    /// or run this function with async and do what you want afther the given duration. It is available since it is thread-safe.
+    pub fn rollout_parallel_until_from(&self, state: S, thread_num: usize, until: Duration) {
+        let flag = AtomicBool::new(true);
+
+        thread::scope(|scope| {
+            let start = SystemTime::now();
+
+            let mut test_threads = Vec::new();
+
+            for _ in 0..thread_num {
+                let thread = scope.spawn(|| {
+                    for _ in 0..5 {
+                        self.rollout_from(state.clone());
+                    }
+                });
+
+                test_threads.push(thread);
+            }
+
+            for t in test_threads {
+                t.join().unwrap();
+            }
+
+            let mut threads = Vec::with_capacity(thread_num);
+
+            let temp_time = start.elapsed().unwrap();
+            let avg_par_time = temp_time / 5;
+
+            for _ in 0..thread_num {
+                let thread = scope.spawn(|| {
+                    while flag.load(Ordering::Relaxed) {
+                        self.rollout_from(state.clone());
+                    }
+                });
+
+                threads.push(thread);
+            }
+
+            thread::sleep(until - temp_time - 3 * avg_par_time);
+
+            flag.store(false, Ordering::SeqCst);
+
+            for t in threads {
+                t.join().unwrap();
             }
         });
     }

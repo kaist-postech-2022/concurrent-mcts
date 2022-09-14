@@ -53,6 +53,7 @@ pub struct StateNodeInfo {
 #[derive(Serialize, Deserialize)]
 struct MCTSInfo {
     total_node: AtomicU64,
+    total_rollout: AtomicU64,
     ignored_rollout: AtomicU64,
 }
 
