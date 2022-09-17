@@ -74,6 +74,7 @@ impl fmt::Display for MCTSInfo {
 
 #[derive(Serialize, Deserialize)]
 pub struct MCTS<P: Player, A: Action, S: State<P, A>> {
+    max_depth: usize,
     state_map: DashMap<S, StateNode<A>>,
     info: MCTSInfo,
     _marker: PhantomData<(P, A)>,

@@ -2,7 +2,7 @@ use std::{
     marker::PhantomData,
     sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     thread,
-    time::{self, Duration, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 use dashmap::DashMap;
@@ -11,8 +11,6 @@ use rand::{Rng, SeedableRng};
 use rand_xorshift::XorShiftRng;
 
 use crate::{Action, MCTSInfo, Player, State, StateNode, StateNodeInfo, MCTS};
-
-const MAX_ROLLOUT_DEPTH: usize = 200;
 
 impl<A: Action> StateNode<A> {
     fn new(available_actions: Vec<A>, player_len: usize) -> Self {
@@ -43,6 +41,7 @@ impl MCTSInfo {
 impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
     pub fn new() -> Self {
         Self {
+            max_depth: 200,
             state_map: DashMap::new(),
             info: MCTSInfo::new(),
             _marker: PhantomData,
@@ -51,6 +50,16 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
 
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
+            max_depth: 200,
+            state_map: DashMap::with_capacity(capacity),
+            info: MCTSInfo::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn new_with_max_depth_and_capacity(max_depth: usize, capacity: usize) -> Self {
+        Self {
+            max_depth,
             state_map: DashMap::with_capacity(capacity),
             info: MCTSInfo::new(),
             _marker: PhantomData,
@@ -134,7 +143,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
 
         loop {
             path.push(state.clone());
-            if path.len() > MAX_ROLLOUT_DEPTH {
+            if path.len() > self.max_depth {
                 self.info.ignored_rollout.fetch_add(1, Ordering::Relaxed);
                 return;
             }
