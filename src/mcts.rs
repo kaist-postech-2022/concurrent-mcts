@@ -1,6 +1,6 @@
 use std::{
     marker::PhantomData,
-    sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
     time::{Duration, SystemTime},
 };
@@ -17,7 +17,7 @@ impl<A: Action> StateNode<A> {
         let mut total_reward = Vec::with_capacity(player_len);
 
         for _ in 0..player_len {
-            total_reward.push(AtomicI64::new(0));
+            total_reward.push(AtomicF64::new(0.));
         }
 
         Self {
@@ -33,6 +33,7 @@ impl MCTSInfo {
         Self {
             total_node: AtomicU64::new(0),
             total_rollout: AtomicU64::new(0),
+            partial_rewards: AtomicU64::new(0),
             ignored_max_depth_rollout: AtomicU64::new(0),
             ignored_try_cycle_by_uct: AtomicU64::new(0),
             ignored_cycle_rollout: AtomicU64::new(0),
@@ -92,7 +93,10 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                     const EXPLORATION_CONSTANT: f64 = 1.4142;
 
                     (reward / visit)
-                        + EXPLORATION_CONSTANT * 2. * ((2. * ln_parent_total_visit / visit).sqrt())
+                        + action.choose_weight()
+                            * EXPLORATION_CONSTANT
+                            * 2.
+                            * ((2. * ln_parent_total_visit / visit).sqrt())
                 }
             });
 
@@ -106,7 +110,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         let mut rng: XorShiftRng = SeedableRng::from_entropy();
 
         for action in node.available_actions.iter() {
-            if self.option.ignore_cycle
+            if self.option.cycle_policy == CyclePolicy::Ignore
                 && ignore_states.contains(&state.clone().apply_action(action.clone()))
             {
                 self.info
@@ -133,7 +137,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         choice
     }
 
-    fn backpropagate(&self, path: Vec<S>, rewards: Vec<i64>) {
+    fn backpropagate(&self, path: Vec<S>, rewards: Vec<f64>) {
         for state in path.iter().rev() {
             let node = self.state_map.get(state).unwrap();
 
@@ -154,9 +158,15 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
 
         loop {
             if path.len() > self.option.max_depth {
-                self.info
-                    .ignored_max_depth_rollout
-                    .fetch_add(1, Ordering::Relaxed);
+                if self.option.cycle_policy == CyclePolicy::PartialReward {
+                    self.info.partial_rewards.fetch_add(1, Ordering::Relaxed);
+                    self.backpropagate(path, state.partial_rewards());
+                } else {
+                    self.info
+                        .ignored_max_depth_rollout
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+
                 return;
             }
 
@@ -181,6 +191,12 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
 
             if let Some(next_action) = self.select_by_uct(state.clone(), &node, &path) {
                 state.do_action(next_action);
+
+                if path.contains(&state) && self.option.cycle_policy == CyclePolicy::PartialReward {
+                    self.info.partial_rewards.fetch_add(1, Ordering::Relaxed);
+                    self.backpropagate(path, state.partial_rewards());
+                    return;
+                }
             } else {
                 self.info
                     .ignored_cycle_rollout
