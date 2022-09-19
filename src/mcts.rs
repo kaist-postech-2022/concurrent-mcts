@@ -10,7 +10,7 @@ use float_ord::FloatOrd;
 use rand::{Rng, SeedableRng};
 use rand_xorshift::XorShiftRng;
 
-use crate::{Action, MCTSInfo, Player, State, StateNode, StateNodeInfo, MCTS};
+use crate::*;
 
 impl<A: Action> StateNode<A> {
     fn new(available_actions: Vec<A>, player_len: usize) -> Self {
@@ -33,35 +33,37 @@ impl MCTSInfo {
         Self {
             total_node: AtomicU64::new(0),
             total_rollout: AtomicU64::new(0),
-            ignored_rollout: AtomicU64::new(0),
+            ignored_max_depth_rollout: AtomicU64::new(0),
+            ignored_try_cycle_by_uct: AtomicU64::new(0),
+            ignored_cycle_rollout: AtomicU64::new(0),
         }
     }
 }
 
 impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
-    pub fn new() -> Self {
+    pub fn new(option: MCTSOption) -> Self {
         Self {
-            max_depth: 200,
             state_map: DashMap::new(),
             info: MCTSInfo::new(),
+            option,
             _marker: PhantomData,
         }
     }
 
-    pub fn new_with_capacity(capacity: usize) -> Self {
+    pub fn new_with_capacity(option: MCTSOption, capacity: usize) -> Self {
         Self {
-            max_depth: 200,
             state_map: DashMap::with_capacity(capacity),
             info: MCTSInfo::new(),
+            option,
             _marker: PhantomData,
         }
     }
 
-    pub fn new_with_max_depth_and_capacity(max_depth: usize, capacity: usize) -> Self {
+    pub fn new_with_max_depth_and_capacity(option: MCTSOption, capacity: usize) -> Self {
         Self {
-            max_depth,
             state_map: DashMap::with_capacity(capacity),
             info: MCTSInfo::new(),
+            option,
             _marker: PhantomData,
         }
     }
@@ -69,7 +71,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
     /// Select next action with UCT policy
     ///
     /// The exploration constant is sqrt(2) according to AlphaGo.
-    fn select_by_uct(&self, state: S, node: &StateNode<A>) -> Option<A> {
+    fn select_by_uct(&self, state: S, node: &StateNode<A>, ignore_states: &Vec<S>) -> Option<A> {
         let now_pid = state.current_player().id();
 
         let ln_parent_total_visit = ((node.total_visit.load(Ordering::Relaxed) + 1) as f64).ln();
@@ -104,6 +106,15 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         let mut rng: XorShiftRng = SeedableRng::from_entropy();
 
         for action in node.available_actions.iter() {
+            if self.option.ignore_cycle
+                && ignore_states.contains(&state.clone().apply_action(action.clone()))
+            {
+                self.info
+                    .ignored_try_cycle_by_uct
+                    .fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+
             let score = uct(action);
 
             if score > max_score {
@@ -142,9 +153,10 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         let mut path = Vec::new();
 
         loop {
-            path.push(state.clone());
-            if path.len() > self.max_depth {
-                self.info.ignored_rollout.fetch_add(1, Ordering::Relaxed);
+            if path.len() > self.option.max_depth {
+                self.info
+                    .ignored_max_depth_rollout
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
@@ -160,11 +172,19 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                 result
             });
 
-            let next_action = self.select_by_uct(state.clone(), &node).unwrap();
-            state.do_action(next_action);
+            path.push(state.clone());
 
             if let Some(rewards) = state.game_over() {
                 self.backpropagate(path, rewards);
+                return;
+            }
+
+            if let Some(next_action) = self.select_by_uct(state.clone(), &node, &path) {
+                state.do_action(next_action);
+            } else {
+                self.info
+                    .ignored_cycle_rollout
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
         }
@@ -260,7 +280,7 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
         })
     }
 
-    pub fn best_actions_from(&self, state: &S, max_num: usize) -> Vec<A> {
+    pub fn best_actions_from(&self, state: &S, max_num: usize) -> Vec<(A, FloatOrd<f64>)> {
         let now_pid = state.current_player().id();
 
         let node = self.state_map.get(state);
@@ -269,23 +289,28 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
             return Vec::new();
         }
 
-        let mut actions = node.unwrap().available_actions.clone();
-        actions.sort_by_cached_key(|action| {
-            let child_node = self
-                .state_map
-                .get(&state.clone().apply_action((*action).clone()));
+        let actions = node.unwrap().available_actions.clone();
+        let mut actions = actions
+            .into_iter()
+            .map(|action| {
+                let child_node = self
+                    .state_map
+                    .get(&state.clone().apply_action(action.clone()));
 
-            if let Some(node) = child_node {
-                let reward = node.total_reward[now_pid].load(Ordering::Relaxed) as f64;
-                let visit = node.total_visit.load(Ordering::Relaxed) as f64;
+                if let Some(node) = child_node {
+                    let reward = node.total_reward[now_pid].load(Ordering::Relaxed) as f64;
+                    let visit = node.total_visit.load(Ordering::Relaxed) as f64;
 
-                if visit > 0. {
-                    return FloatOrd(-1. * reward / visit);
+                    if visit > 0. {
+                        return (action, FloatOrd(-1. * reward / visit));
+                    }
                 }
-            }
 
-            FloatOrd(-1. * f64::NEG_INFINITY)
-        });
+                (action, FloatOrd(-1. * f64::NEG_INFINITY))
+            })
+            .collect::<Vec<_>>();
+
+        actions.sort_by_key(|action| action.1);
 
         if actions.len() <= max_num {
             actions

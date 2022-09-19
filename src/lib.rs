@@ -54,7 +54,24 @@ pub struct StateNodeInfo {
 struct MCTSInfo {
     total_node: AtomicU64,
     total_rollout: AtomicU64,
-    ignored_rollout: AtomicU64,
+    ignored_max_depth_rollout: AtomicU64,
+    ignored_try_cycle_by_uct: AtomicU64,
+    ignored_cycle_rollout: AtomicU64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MCTSOption {
+    max_depth: usize,
+    ignore_cycle: bool,
+}
+
+impl MCTSOption {
+    pub fn new(max_depth: usize, ignore_cycle: bool) -> Self {
+        Self {
+            max_depth,
+            ignore_cycle,
+        }
+    }
 }
 
 impl fmt::Display for MCTSInfo {
@@ -65,8 +82,20 @@ impl fmt::Display for MCTSInfo {
                 &thousands_separate(self.total_node.load(Ordering::Relaxed)),
             )
             .field(
-                "ignored_rollout",
-                &thousands_separate(self.ignored_rollout.load(Ordering::Relaxed)),
+                "total_rollout",
+                &thousands_separate(self.total_rollout.load(Ordering::Relaxed)),
+            )
+            .field(
+                "ignored_max_depth_rollout",
+                &thousands_separate(self.ignored_max_depth_rollout.load(Ordering::Relaxed)),
+            )
+            .field(
+                "ignored_cycle_rollout",
+                &thousands_separate(self.ignored_try_cycle_by_uct.load(Ordering::Relaxed)),
+            )
+            .field(
+                "ignored_try_cycle_by_uct",
+                &thousands_separate(self.ignored_cycle_rollout.load(Ordering::Relaxed)),
             )
             .finish()
     }
@@ -74,9 +103,9 @@ impl fmt::Display for MCTSInfo {
 
 #[derive(Serialize, Deserialize)]
 pub struct MCTS<P: Player, A: Action, S: State<P, A>> {
-    max_depth: usize,
     state_map: DashMap<S, StateNode<A>>,
     info: MCTSInfo,
+    option: MCTSOption,
     _marker: PhantomData<(P, A)>,
 }
 
