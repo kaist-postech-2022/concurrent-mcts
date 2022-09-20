@@ -275,7 +275,11 @@ impl<P: Player, A: Action, S: State<P, A>> MCTS<P, A, S> {
                 threads.push(thread);
             }
 
-            thread::sleep(until - temp_time - 3 * avg_par_time);
+            let overhead = temp_time + 3 * avg_par_time;
+
+            if until > overhead {
+                thread::sleep(until - temp_time - 3 * avg_par_time);
+            }
 
             flag.store(false, Ordering::SeqCst);
 
